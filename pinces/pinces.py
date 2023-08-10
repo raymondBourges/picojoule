@@ -1,40 +1,16 @@
 import time, math, machine
-
-### CONFIG et initialisation ###
-adcPinces = []
-
-# Configure des broches GPIO comme entrées ADC des pinces
-adcPinces.append(machine.ADC(machine.Pin(26)))
-#adcPinces.append(machine.ADC(machine.Pin(27)))
-
-# Configure de la broche GPIO comme entrée ADC transformateur
-adcTransfo = machine.ADC(machine.Pin(28))
-
-# Calibration de la phase
-# Prend en compte le déphasage dû au transfo et au temps de lecture entre U de référence et I de la pince
-PHASECAL = 0
-
-# Calibration pour la mesure de la tension
-tensionReseau = 230
-resistances = [10_000, 200_000]
-tensionSortieTransfo = 12.33
-# Tension du réseau
-VCAL = (resistances[0] + resistances[1]) * tensionReseau / resistances[0] / tensionSortieTransfo
-
-# Calibration pour la mesure du courant
-nbToursPince = 2000
-resistanceTirage = 150
-ICAL = nbToursPince / resistanceTirage
-
+from pinces.configuration import config
 
 # RP2040 lit sur 3.3 V et 2^16 bits
 facteurCorrection = 3.3 / 65536
-decalageV = 0
-decalageI = 0
 
 ### PROGRAMME ###
 
-def mesure(id, adc, decalageV, decalageI):
+def mesure(id, decalageV, decalageI, debug):
+	if debug:
+		print("***********************")
+		print("--- pince ", config["pinces"][id]["id"], "---")
+		print("***********************")
 	ret = []
 	nb_lectures = 0
 
@@ -44,8 +20,23 @@ def mesure(id, adc, decalageV, decalageI):
 	sommePinstantanee = 0
 	sommeI = 0 
 	sommeV = 0
+	adcTransfo = machine.ADC(machine.Pin(config["transfo"]["pin"]))
+	adcPince = machine.ADC(machine.Pin(config["pinces"][id]["pin"]))
+
+	# Calibration pour la mesure de la tension
+	tensionReseau = config["transfo"]["Ventree"]
+	resistances = config["transfo"]["resistancePontDiviseur"]
+	tensionSortieTransfo = config["transfo"]["Vsortie"]
+	# Tension du réseau
+	VCAL = (resistances[0] + resistances[1]) * tensionReseau / resistances[0] / tensionSortieTransfo
+
+	# Calibration pour la mesure du courant
+	nbToursPince = config["pinces"][id]["nbTours"]
+	resistanceTirage = config["pinces"][id]["resistanceTirage"]
+	ICAL = nbToursPince / resistanceTirage
+
 	# On boucle pendant n ms
-	end_time = time.ticks_add(time.ticks_ms(), 500)
+	end_time = time.ticks_add(time.ticks_ms(), 100)
 	while time.ticks_diff(end_time, time.ticks_ms()) > 0:
 		nb_lectures += 1	
 
@@ -53,14 +44,9 @@ def mesure(id, adc, decalageV, decalageI):
 
 		# lecture ADC
 		lectureVbrute = adcTransfo.read_u16()
-		lectureIbrute = adc.read_u16()
-
-		# valeurs corrigées
-		# decalageV += (lectureVbrute - decalageV) / 65536
-		# decalageI += (lectureIbrute - decalageI) / 65536
+		lectureIbrute = adcPince.read_u16()
 		lectureV = lectureVbrute - 32768 - decalageV
 		lectureI = lectureIbrute - 32768 - decalageI
-#		print(adc.read_u16() - 32768)
 		sommeI += lectureI 
 		sommeV += lectureV 
 
@@ -71,38 +57,51 @@ def mesure(id, adc, decalageV, decalageI):
 		sommeIcarre += Icarre
 
 		# calibration de la phase
-		lectureVdecalee = derniereLectureV + PHASECAL * (lectureV - derniereLectureV)
+		lectureVdecalee = derniereLectureV + config["PHASECAL"] * (lectureV - derniereLectureV)
 
 		# puissance instantanée
 		Pinstantanee = lectureVdecalee * lectureI
-#		print(lectureVdecalee, lectureI)
 		sommePinstantanee += Pinstantanee
 
 	# calculs post boucle
 	Vrms = math.sqrt(sommeVcarre / nb_lectures) * facteurCorrection * VCAL
 	Irms = math.sqrt(sommeIcarre / nb_lectures) * facteurCorrection * ICAL
-	puissanceReelle = sommePinstantanee / nb_lectures * facteurCorrection * VCAL * facteurCorrection * ICAL
+	puissanceReelle = max(0, sommePinstantanee / nb_lectures * facteurCorrection * VCAL * facteurCorrection * ICAL)
 	puissanceApparente = Vrms * Irms
 	facteurdePuissance = puissanceReelle / puissanceApparente
 	moyenneV = sommeV/nb_lectures
-	print("moyenne V", moyenneV)
 	decalageV = decalageV + moyenneV / 64 # pour converger
 	moyenneI = sommeI/nb_lectures
-	print("moyenne I", moyenneI)
 	decalageI = decalageI + moyenneI / 64 # pour converger
-	print("puisssance apparente", puissanceApparente)
-	ret.append(id)
+	ret.append(config["pinces"][id]["id"])
 	ret.append(puissanceReelle)
 	ret.append(facteurdePuissance)
 	ret.append(Vrms)
 	ret.append(Irms)
-	print("nb lecture", nb_lectures)
+	if debug:
+		print("moyenne V", moyenneV)
+		print("moyenne I", moyenneI)
+		print("puisssance apparente", puissanceApparente)
+		print("nb lecture", nb_lectures)
+		print("decalage V", decalageV)
+		print("decalage I", decalageI)
 	return ret, decalageV, decalageI
 
-while True:
-	idPince = 0
-	for adcPince in adcPinces:
-		idPince += 1
-		ret, decalageV, decalageI = mesure(idPince, adcPince, decalageV, decalageI)
-		print(ret, decalageV, decalageI)
-	time.sleep(1)
+def main(decalageV, decalageI, debug = False):
+	while True:
+		idPince = 0
+		for adcPince in config["pinces"]:
+			m, decalageV, decalageI = mesure(idPince, decalageV, decalageI, debug)
+			if debug:
+				print(f"{int(m[1])} W, {m[2] * 100:.0f} %, {m[3]:.0f} V, {m[4]:.2f} A")
+				print(m)
+			print(f"[{int(m[1])}, {m[2] * 100:.0f}, {m[3]:.0f}, {m[4]:.2f}]")
+			idPince += 1
+		time.sleep(1)
+
+# Pour facilement travailler avec VSCode :
+
+decalageV = 0
+decalageI = 0
+
+main(decalageV, decalageI, True)		
