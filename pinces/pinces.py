@@ -4,13 +4,21 @@ from pinces.configuration import config
 # RP2040 lit sur 3.3 V et 2^16 bits
 facteurCorrection = 3.3 / 65536
 
+# On etteint les leds du XIAO RP2040
+userLed = machine.Pin(16, machine.Pin.OUT)
+userLed.value(1)
+userLed = machine.Pin(17, machine.Pin.OUT)
+userLed.value(1)
+userLed = machine.Pin(25, machine.Pin.OUT)
+userLed.value(1)
+
 ### PROGRAMME ###
 
 def mesure(id, decalageV, decalageI, debug):
 	if debug:
-		print("***********************")
-		print("--- pince ", config["pinces"][id]["id"], "---")
-		print("***********************")
+		print("----------------")
+		print("--- pince ", config["pinces"][id], "---")
+		print("--- transfo ", config["transfo"], "---")
 	ret = []
 	nb_lectures = 0
 
@@ -20,6 +28,8 @@ def mesure(id, decalageV, decalageI, debug):
 	sommePinstantanee = 0
 	sommeI = 0 
 	sommeV = 0
+	maxI = 0
+	maxV = 0
 	adcTransfo = machine.ADC(machine.Pin(config["transfo"]["pin"]))
 	adcPince = machine.ADC(machine.Pin(config["pinces"][id]["pin"]))
 
@@ -45,8 +55,16 @@ def mesure(id, decalageV, decalageI, debug):
 		# lecture ADC
 		lectureVbrute = adcTransfo.read_u16()
 		lectureIbrute = adcPince.read_u16()
-		lectureV = lectureVbrute - 32768 - decalageV
-		lectureI = lectureIbrute - 32768 - decalageI
+#		print(lectureVbrute, lectureIbrute)
+		lectureV = lectureVbrute - 32768
+		lectureI = lectureIbrute - 32768
+		if debug:
+			if lectureV > maxV:
+				maxV = lectureV
+			if lectureI:
+				maxI = lectureI
+		lectureV -= decalageV
+		lectureI -= decalageI
 		sommeI += lectureI 
 		sommeV += lectureV 
 
@@ -66,42 +84,43 @@ def mesure(id, decalageV, decalageI, debug):
 	# calculs post boucle
 	Vrms = math.sqrt(sommeVcarre / nb_lectures) * facteurCorrection * VCAL
 	Irms = math.sqrt(sommeIcarre / nb_lectures) * facteurCorrection * ICAL
-	puissanceReelle = max(0, sommePinstantanee / nb_lectures * facteurCorrection * VCAL * facteurCorrection * ICAL)
+	puissanceReelle = sommePinstantanee / nb_lectures * facteurCorrection * VCAL * facteurCorrection * ICAL
 	puissanceApparente = Vrms * Irms
 	facteurdePuissance = puissanceReelle / puissanceApparente
 	moyenneV = sommeV/nb_lectures
-	decalageV = decalageV + moyenneV / 64 # pour converger
+	decalageV = int(decalageV + moyenneV / 64) # pour converger
 	moyenneI = sommeI/nb_lectures
-	decalageI = decalageI + moyenneI / 64 # pour converger
+	decalageI = int(decalageI + moyenneI / 64) # pour converger
 	ret.append(config["pinces"][id]["id"])
 	ret.append(puissanceReelle)
 	ret.append(facteurdePuissance)
 	ret.append(Vrms)
 	ret.append(Irms)
 	if debug:
-		print("moyenne V", moyenneV)
-		print("moyenne I", moyenneI)
-		print("puisssance apparente", puissanceApparente)
 		print("nb lecture", nb_lectures)
-		print("decalage V", decalageV)
-		print("decalage I", decalageI)
+		print(f'  | {"max (nb)":14} | {"moyenne (nb)":14} | {"delacage (nb)":14} | {"rms (V ou A)":14} |')
+		print(f"V |{maxV:15} |{moyenneV:15.0f} |{decalageV:15} |{Vrms:15.2f} |")
+		print(f"I |{maxI:15} |{moyenneI:15.0f} |{decalageI:15} |{Irms:15.2f} |")
+		print(f"puisssance apparente : {puissanceApparente:.0f} W")
+		print(ret)	
+		print(f"[{int(ret[1])} W, {ret[2] * 100:.0f} %, {ret[3]:.0f} V, {ret[4]:.2f} A]")
 	return ret, decalageV, decalageI
 
 def main(decalageV, decalageI, debug = False):
 	while True:
 		idPince = 0
-		for adcPince in config["pinces"]:
+		if debug:
+			print("---------------- Lecture des pinces -------------------------")
+		for pinces in config["pinces"]:
 			m, decalageV, decalageI = mesure(idPince, decalageV, decalageI, debug)
-			if debug:
-				print(f"{int(m[1])} W, {m[2] * 100:.0f} %, {m[3]:.0f} V, {m[4]:.2f} A")
-				print(m)
 			print(f"[{int(m[1])}, {m[2] * 100:.0f}, {m[3]:.0f}, {m[4]:.2f}]")
 			idPince += 1
 		time.sleep(1)
+		userLed.toggle()
 
 # Pour facilement travailler avec VSCode :
 
-decalageV = 0
-decalageI = 0
+decalageV = -1000
+decalageI = -1000
 
 main(decalageV, decalageI, True)		
